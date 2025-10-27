@@ -1,3 +1,4 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("//xla/tsl:tsl.bzl", "internal_visibility")
 load("//xla/tsl:tsl.default.bzl", "filegroup", "get_compatible_with_portable")
 load("//xla/tsl/platform:build_config.bzl", "tsl_cc_test")
@@ -244,6 +245,7 @@ tsl_cc_test(
         ":xplane_schema",
         ":xplane_utils",
         ":xplane_visitor",
+        "//tensorflow/core/profiler/protobuf:task_proto_cc",
         "//xla/tsl/platform:test",
         "//xla/tsl/platform:types",
         "@com_google_absl//absl/container:flat_hash_map",
