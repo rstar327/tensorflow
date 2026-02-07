@@ -1,5 +1,5 @@
+load("@xla//third_party/rules_python/python:py_test.bzl", "py_test")
 load("//tensorflow:pytype.default.bzl", "pytype_strict_library")
-load("//tensorflow:strict.default.bzl", "py_strict_test")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -12,9 +12,10 @@ pytype_strict_library(
     srcs = ["exported_api.py"],
 )
 
-py_strict_test(
+py_test(
     name = "exported_api_test",
     srcs = ["exported_api_test.py"],
+    strict_deps = True,
     tags = ["no_pip"],
     deps = [
         ":exported_api",

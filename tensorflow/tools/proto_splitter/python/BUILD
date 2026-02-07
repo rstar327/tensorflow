@@ -1,7 +1,8 @@
+load("@xla//third_party/rules_python/python:py_test.bzl", "py_test")
+
 # Description:
 #   Python library for splitting and joining large protos.
 load("//tensorflow:pytype.default.bzl", "pytype_strict_library")
-load("//tensorflow:strict.default.bzl", "py_strict_test")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -25,9 +26,10 @@ pytype_strict_library(
     ],
 )
 
-py_strict_test(
+py_test(
     name = "saved_model_test",
     srcs = ["saved_model_test.py"],
+    strict_deps = True,
     tags = [
         "no_mac",  # b/291933687
         "no_windows",  # b/291001524
@@ -53,9 +55,10 @@ pytype_strict_library(
     ],
 )
 
-py_strict_test(
+py_test(
     name = "test_util_test",
     srcs = ["test_util_test.py"],
+    strict_deps = True,
     deps = [
         #internal proto upb dep
         "//tensorflow/python/framework:dtypes",

@@ -1,6 +1,7 @@
+load("@xla//third_party/rules_python/python:py_test.bzl", "py_test")
+
 # QuantizationDebugger for TFLite accuracy tooling.
 load("//tensorflow:pytype.default.bzl", "pytype_strict_library")
-load("//tensorflow:strict.default.bzl", "py_strict_test")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -20,11 +21,12 @@ pytype_strict_library(
     ],
 )
 
-py_strict_test(
+py_test(
     name = "debugger_test",
     srcs = [
         "debugger_test.py",
     ],
+    strict_deps = True,
     deps = [
         ":debugger",
         "@absl_py//absl/testing:parameterized",

@@ -13,11 +13,11 @@ load(
     "@local_config_rocm//rocm:build_defs.bzl",
     "if_rocm_is_configured",
 )
+load("@xla//third_party/rules_python/python:py_test.bzl", "py_test")
 load(
     "@xla//xla/tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
 )
-load("//tensorflow:strict.default.bzl", "py_strict_test")
 load(
     "//tensorflow:tensorflow.bzl",
     "if_google",
@@ -491,9 +491,10 @@ cc_library(
     ],
 )
 
-py_strict_test(
+py_test(
     name = "ram_file_system_test",
     srcs = ["ram_file_system_test.py"],
+    strict_deps = True,
     deps = [
         # copybara:uncomment "//third_party/py/google/protobuf:use_fast_cpp_protos",
         "//tensorflow/python/compat:v2_compat",

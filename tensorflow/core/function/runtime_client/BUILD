@@ -1,6 +1,6 @@
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@xla//third_party/rules_python/python:py_test.bzl", "py_test")
 load("//tensorflow:pytype.default.bzl", "pytype_strict_library")
-load("//tensorflow:strict.default.bzl", "py_strict_test")
 load("//tensorflow:tensorflow.bzl", "tf_cc_test")
 load("//tensorflow:tensorflow.default.bzl", "tf_python_pybind_extension")
 load("//tensorflow/core/platform:build_config_root.bzl", "if_static")
@@ -158,10 +158,11 @@ pytype_strict_library(
     ],
 )
 
-py_strict_test(
+py_test(
     name = "runtime_client_py_test",
     srcs = ["runtime_client_test.py"],
     main = "runtime_client_test.py",
+    strict_deps = True,
     tags = ["no_oss"],  # TODO(b/219089812)
     deps = [
         ":runtime_client_py",

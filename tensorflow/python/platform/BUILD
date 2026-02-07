@@ -1,6 +1,6 @@
 # platform package
 
-load("//tensorflow:strict.default.bzl", "py_strict_library")
+load("@xla//third_party/rules_python/python:py_library.bzl", "py_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "if_oss",
@@ -29,19 +29,22 @@ tf_py_build_info_genrule(
     out = "build_info.py",
 )
 
-py_strict_library(
+py_library(
     name = "build_info",
     srcs = ["build_info.py"],
+    strict_deps = True,
 )
 
-py_strict_library(
+py_library(
     name = "windows_lib_diagnostics",
     srcs = ["windows_lib_diagnostics.py"],
+    strict_deps = True,
 )
 
-py_strict_library(
+py_library(
     name = "self_check",
     srcs = ["self_check.py"],
+    strict_deps = True,
     deps = if_oss(
         [
             ":build_info",
@@ -50,9 +53,10 @@ py_strict_library(
     ),
 )
 
-py_strict_library(
+py_library(
     name = "benchmark",
     srcs = ["benchmark.py"],
+    strict_deps = True,
     visibility = visibility + ["//tensorflow:internal"],
     deps = [
         ":gfile",
@@ -66,23 +70,26 @@ py_strict_library(
     ],
 )
 
-py_strict_library(
+py_library(
     name = "analytics",
     srcs = ["analytics.py"],
+    strict_deps = True,
 )
 
-py_strict_library(
+py_library(
     name = "device_context",
     srcs = ["device_context.py"],
+    strict_deps = True,
     deps = [
         "//tensorflow/python/framework:ops",
         "//tensorflow/python/ops:control_flow_ops",
     ],
 )
 
-py_strict_library(
+py_library(
     name = "test",
     srcs = ["googletest.py"],
+    strict_deps = True,
     # copybara:uncomment_begin(google-only)
     # visibility = visibility + ["//tensorflow:internal"],
     # copybara:uncomment_end_and_comment_begin
@@ -218,9 +225,10 @@ tf_python_pybind_extension(
     ],
 )
 
-py_strict_library(
+py_library(
     name = "client_testlib",
     srcs = ["test.py"],
+    strict_deps = True,
     # copybara:uncomment_begin(google-only)
     # visibility = visibility + [
     # "//third_party/cloud_tpu/convergence_tools:__subpackages__",
@@ -241,9 +249,10 @@ py_strict_library(
     ],
 )
 
-py_strict_library(
+py_library(
     name = "app",
     srcs = ["app.py"],
+    strict_deps = True,
     deps = [
         ":flags",
         "//tensorflow/python/util:_pywrap_util_port",
@@ -252,9 +261,10 @@ py_strict_library(
     ],
 )
 
-py_strict_library(
+py_library(
     name = "sysconfig",
     srcs = ["sysconfig.py"],
+    strict_deps = True,
     deps = [
         ":build_info",
         "//tensorflow/python/client:pywrap_tf_session",
@@ -263,35 +273,40 @@ py_strict_library(
     ],
 )
 
-py_strict_library(
+py_library(
     name = "__init__",
     srcs = ["__init__.py"],
+    strict_deps = True,
     deps = [
     ],
 )
 
-py_strict_library(
+py_library(
     name = "control_imports",
     srcs = ["control_imports.py"],
+    strict_deps = True,
     deps = [
     ],
 )
 
-py_strict_library(
+py_library(
     name = "parameterized",
     srcs = ["parameterized.py"],
+    strict_deps = True,
 )
 
-py_strict_library(
+py_library(
     name = "remote_utils",
     srcs = ["remote_utils.py"],
+    strict_deps = True,
     deps = [
     ],
 )
 
-py_strict_library(
+py_library(
     name = "gfile",
     srcs = ["gfile.py"],
+    strict_deps = True,
     # copybara:uncomment_begin(google-only)
     # visibility = visibility,
     # copybara:uncomment_end_and_comment_begin
@@ -306,9 +321,10 @@ py_strict_library(
     ],
 )
 
-py_strict_library(
+py_library(
     name = "tf_logging",
     srcs = ["tf_logging.py"],
+    strict_deps = True,
     # copybara:uncomment_begin(google-only)
     # visibility = visibility + [
     # "//learning/brain/contrib/learn:__pkg__",
@@ -326,9 +342,10 @@ py_strict_library(
     ],
 )
 
-py_strict_library(
+py_library(
     name = "flags",
     srcs = ["flags.py"],
+    strict_deps = True,
     visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/python/util:tf_decorator_py",
@@ -336,9 +353,10 @@ py_strict_library(
     ],
 )
 
-py_strict_library(
+py_library(
     name = "resource_loader",
     srcs = ["resource_loader.py"],
+    strict_deps = True,
     visibility = ["//visibility:public"],
     deps = [
         ":tf_logging",
