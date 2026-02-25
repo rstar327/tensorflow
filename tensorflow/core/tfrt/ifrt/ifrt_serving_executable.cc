@@ -611,12 +611,16 @@ IfrtServingExecutable::CreateExecutableSynchronously(
 
   executable_bundle->arg_hlo_shardings.reserve(
       executable_bundle->compile_metadata.args().size());
-  for (int i = 0; i < executable_bundle->compile_metadata.args().size(); ++i) {
-    TF_ASSIGN_OR_RETURN(
-        xla::HloSharding hlo_sharding,
-        xla::HloSharding::FromProto(
-            executable_bundle->compile_metadata.args()[i].sharding()));
+  executable_bundle->reshaped_input_tensors.reserve(
+      executable_bundle->compile_metadata.args().size());
+  for (const auto& arg : executable_bundle->compile_metadata.args()) {
+    TF_ASSIGN_OR_RETURN(xla::HloSharding hlo_sharding,
+                        xla::HloSharding::FromProto(arg.sharding()));
     executable_bundle->arg_hlo_shardings.push_back(hlo_sharding);
+    TF_ASSIGN_OR_RETURN(auto reshaped_tensor,
+                        tensorflow::TensorShape::BuildTensorShape(arg.shape()));
+    executable_bundle->reshaped_input_tensors.push_back(
+        std::move(reshaped_tensor));
   }
 
   executable_bundle->retval_hlo_shardings.reserve(
@@ -877,19 +881,13 @@ absl::StatusOr<std::vector<tensorflow::Tensor>> IfrtServingExecutable::Execute(
   for (int i = 0; i < inputs.size(); i++) {
     if (variable_arg_index < variable_arg_indices.size() &&
         i == variable_arg_indices[variable_arg_index]) {
-      // TODO(b/445201291): Cache the `hlo_sharding` in `executable_bundle`.
-      TF_ASSIGN_OR_RETURN(
-          xla::HloSharding hlo_sharding,
-          xla::HloSharding::FromProto(
-              executable_bundle->compile_metadata.args()[i].sharding()));
-
       std::shared_ptr<xla::Shape> shape_ptr = nullptr;
       if (executable_bundle->xla_input_shapes.has_value()) {
         shape_ptr = (*executable_bundle->xla_input_shapes)[i];
       }
       IfrtLoadedVariableRegistry::KeyView key_view(
-          device_ids, inputs[i].scalar<tsl::tstring>()(), hlo_sharding,
-          std::move(shape_ptr));
+          device_ids, inputs[i].scalar<tsl::tstring>()(),
+          executable_bundle->arg_hlo_shardings[i], std::move(shape_ptr));
       auto it = executable_bundle->variable_arrays.find(key_view);
       if (it == executable_bundle->variable_arrays.end()) {
         return absl::InternalError(absl::StrCat(
@@ -902,10 +900,9 @@ absl::StatusOr<std::vector<tensorflow::Tensor>> IfrtServingExecutable::Execute(
       // compilation, reshape the input tensor to the expected shape. Note that
       // the tensor assignment here won't create a copy.
       tensorflow::Tensor reshaped = inputs[i];
-      TF_ASSIGN_OR_RETURN(
-          tensorflow::TensorShape reshaped_shape,
-          tensorflow::TensorShape::BuildTensorShape(
-              executable_bundle->compile_metadata.args()[i].shape()));
+      const tensorflow::TensorShape& reshaped_shape =
+          executable_bundle->reshaped_input_tensors[i];
+
       if (reshaped.shape() != reshaped_shape &&
           !reshaped.CopyFrom(inputs[i], reshaped_shape)) {
         return absl::InternalError("Failed to reshape tensor");
