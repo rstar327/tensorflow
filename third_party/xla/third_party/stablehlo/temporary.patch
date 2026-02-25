@@ -1,3 +1,47 @@
+diff --ruN a/stablehlo/docs/spec.md b/stablehlo/docs/spec.md
+--- stablehlo/docs/spec.md
++++ stablehlo/docs/spec.md
+@@ -1947,8 +1947,8 @@
+ #### Semantics
+ 
+ Encapsulates an operation made up (composed) of other StableHLO operations,
+-taking `inputs` and `composite_attributes` and producing `results`. The
+-semantics of the op are implemented by the `decomposition` attribute. The
++taking `inputs`, `composite_attributes` and `regions` and producing `results`.
++The semantics of the op are implemented by the `decomposition` attribute. The
+ `composite` op can be replaced with its decomposition without changing program
+ semantics. In cases where inlining the decomposition does not provide the same
+ op semantics, prefer using `custom_call`.
+@@ -1956,15 +1956,20 @@
+ The `version` field (defaults to `0`) is used to denote when a composite's
+ semantics change.
+ 
+-#### Inputs
+-
+-| Label | Name                   | Type                      |
+-|-------|------------------------|---------------------------|
+-| (I1)  | `inputs`               | variadic number of values |
+-| (I2)  | `name`                 | constant of type `string` |
+-| (I3)  | `composite_attributes` | attribute dictionary      |
+-| (I4)  | `decomposition`        | constant of type `string` |
+-| (I5)  | `version`              | constant of type `si32`   |
++The intent of `regions` is to only be used to model ops with bodies (e.g.
++`my_op` may have a body like `while` or `reduce`). If the decomposition is
++inlined, the `regions` are ignored.
++
++#### Inputs
++
++| Label | Name                   | Type                         |
++|-------|------------------------|------------------------------|
++| (I1)  | `inputs`               | variadic number of values    |
++| (I2)  | `name`                 | constant of type `string`    |
++| (I3)  | `composite_attributes` | attribute dictionary         |
++| (I4)  | `decomposition`        | constant of type `string`    |
++| (I5)  | `version`              | constant of type `si32`      |
++| (I6)  | `regions`              | variadic number of functions |
+ 
+ #### Outputs
+ 
 diff --ruN a/stablehlo/stablehlo/dialect/ChloOps.cpp b/stablehlo/stablehlo/dialect/ChloOps.cpp
 --- stablehlo/stablehlo/dialect/ChloOps.cpp
 +++ stablehlo/stablehlo/dialect/ChloOps.cpp
@@ -115,7 +159,51 @@ diff --ruN a/stablehlo/stablehlo/dialect/StablehloOps.td b/stablehlo/stablehlo/d
  
  class StableHLO_ResourceBase<string resourceKind> :
      Resource<!strconcat("::mlir::stablehlo::side_effects::", resourceKind)> {}
-@@ -2557,7 +2557,7 @@
+@@ -2369,6 +2369,10 @@
+     The `version` field (defaults to `0`) is used to denote when a composite's
+     semantics change.
+ 
++    The intent of `composite_regions` is to only be used to model ops with
++    bodies, regions are thrown away if the fallback decomposition function gets
++    inlined.
++
+     See:
+     https://github.com/openxla/stablehlo/blob/main/docs/spec.md#composite
+ 
+@@ -2391,9 +2395,31 @@
+     FlatSymbolRefAttr:$decomposition, /*composite_i4*/
+     DefaultValuedOptionalAttr<I32Attr, "0">:$version /*composite_i5*/
+   );
++  let regions = (region VariadicRegion<AnyRegion>:$composite_regions);
+   let results = (outs Variadic<HLO_TensorOrPerAxisQuantizedTensorOrTokenOrTuple>);
+ 
+-  let assemblyFormat = "$name $inputs attr-dict `:` functional-type(operands, results)";
++  let builders = [
++    OpBuilder<(ins
++      "::mlir::TypeRange":$resultTypes, "::mlir::ValueRange":$inputs,
++      "::mlir::ArrayRef<::mlir::NamedAttribute>":$attributes
++    ), [{
++      build($_builder, $_state, resultTypes, inputs, attributes,
++            /*regionsCount=*/0);
++    }]>,
++    OpBuilder<(ins
++      "::mlir::TypeRange":$resultTypes, "::mlir::ValueRange":$inputs,
++      "::mlir::StringRef":$name, "::mlir::DictionaryAttr":$attributes,
++      "::mlir::StringRef":$decomposition, CArg<"uint32_t", "0">:$version
++    ), [{
++      build($_builder, $_state, resultTypes, inputs, name, attributes,
++            decomposition, version, /*regionsCount=*/0);
++    }]>
++  ];
++
++  let assemblyFormat = [{
++    $name operands (` ` `(` $composite_regions^ `)`)? attr-dict
++    `:` functional-type(operands, results)
++  }];
+ }
+ 
+ def StableHLO_ConvolutionOp : StableHLO_Op<"convolution",
+@@ -2557,7 +2583,7 @@
    }];
  }
  
@@ -124,7 +212,7 @@ diff --ruN a/stablehlo/stablehlo/dialect/StablehloOps.td b/stablehlo/stablehlo/d
    let summary = "Dot operation";
    let description = [{
      This operation is on its way out of StableHLO, so it is not included in
-@@ -2587,7 +2587,8 @@
+@@ -2587,7 +2613,8 @@
  }
  
  def StableHLO_DotGeneralOp: StableHLO_ShapedInterfaceOp<"dot_general",
@@ -242,6 +330,18 @@ diff --ruN a/stablehlo/stablehlo/dialect/TypeInference.cpp b/stablehlo/stablehlo
    return success();
  }
  
+diff --ruN a/stablehlo/stablehlo/dialect/Version.h b/stablehlo/stablehlo/dialect/Version.h
+--- stablehlo/stablehlo/dialect/Version.h
++++ stablehlo/stablehlo/dialect/Version.h
+@@ -38,7 +38,7 @@
+   static FailureOr<Version> fromString(llvm::StringRef versionRef);
+ 
+   /// Return a Version representing the current VHLO dialect version.
+-  static Version getCurrentVersion() { return Version(1, 13, 8); }
++  static Version getCurrentVersion() { return Version(1, 14, 0); }
+ 
+   /// Return a Version representing the minimum supported VHLO dialect version.
+   static Version getMinimumVersion() { return Version(0, 9, 0); }
 diff --ruN a/stablehlo/stablehlo/dialect/VhloBytecode.cpp b/stablehlo/stablehlo/dialect/VhloBytecode.cpp
 --- stablehlo/stablehlo/dialect/VhloBytecode.cpp
 +++ stablehlo/stablehlo/dialect/VhloBytecode.cpp
@@ -355,6 +455,48 @@ diff --ruN a/stablehlo/stablehlo/dialect/VhloBytecode.cpp b/stablehlo/stablehlo/
  }
  
  //===----------------------------------------------------------------------===//
+diff --ruN a/stablehlo/stablehlo/dialect/VhloDialect.td b/stablehlo/stablehlo/dialect/VhloDialect.td
+--- stablehlo/stablehlo/dialect/VhloDialect.td
++++ stablehlo/stablehlo/dialect/VhloDialect.td
+@@ -52,6 +52,7 @@
+       1.11.0: Allow (de)serializing VHLO programs mixed with potentially unstable dialects.
+       1.12.0: Add `source_target_pairs` attribute to `send` and `recv` ops.
+       1.13.0: Extend `custom_call` op to support `buffer` types.
++      1.14.0: Introduce `composite` op with regions.
+   }];
+ 
+   let useDefaultAttributePrinterParser = 0;
+diff --ruN a/stablehlo/stablehlo/dialect/VhloOps.td b/stablehlo/stablehlo/dialect/VhloOps.td
+--- stablehlo/stablehlo/dialect/VhloOps.td
++++ stablehlo/stablehlo/dialect/VhloOps.td
+@@ -326,7 +326,7 @@
+   let results = (outs VHLO_AnyType:$result);
+ }
+ 
+-def VHLO_CompositeOpV1 : VHLO_Op<"composite_v1", "0.19.0", "current"> {
++def VHLO_CompositeOpV1 : VHLO_Op<"composite_v1", "0.19.0", "1.13.0"> {
+   let arguments = (ins
+     Variadic<VHLO_AnyType>:$inputs,
+     VHLO_AnyAttr:$name,
+@@ -334,6 +334,18 @@
+     VHLO_AnyAttr:$decomposition,
+     VHLO_AnyAttr:$version
+   );
++  let results = (outs Variadic<VHLO_AnyType>:$results);
++}
++
++def VHLO_CompositeOpV2 : VHLO_Op<"composite_v2", "1.14.0", "current"> {
++  let arguments = (ins
++    Variadic<VHLO_AnyType>:$inputs,
++    VHLO_AnyAttr:$name,
++    VHLO_AnyAttr:$composite_attributes,
++    VHLO_AnyAttr:$decomposition,
++    VHLO_AnyAttr:$version
++  );
++  let regions = (region VariadicRegion<VHLO_AnyRegion>:$composite_regions);
+   let results = (outs Variadic<VHLO_AnyType>:$results);
+ }
+ 
 diff --ruN a/stablehlo/stablehlo/integrations/python/ChloModule.cpp b/stablehlo/stablehlo/integrations/python/ChloModule.cpp
 --- stablehlo/stablehlo/integrations/python/ChloModule.cpp
 +++ stablehlo/stablehlo/integrations/python/ChloModule.cpp
@@ -377,6 +519,21 @@ diff --ruN a/stablehlo/stablehlo/integrations/python/StablehloModule.cpp b/stabl
  #include "mlir-c/IR.h"
  #include "mlir-c/Support.h"
  #include "mlir/Bindings/Python/NanobindAdaptors.h"
+diff --ruN a/stablehlo/stablehlo/integrations/python/mlir/dialects/stablehlo.py b/stablehlo/stablehlo/integrations/python/mlir/dialects/stablehlo.py
+--- stablehlo/stablehlo/integrations/python/mlir/dialects/stablehlo.py
++++ stablehlo/stablehlo/integrations/python/mlir/dialects/stablehlo.py
+@@ -17,3 +17,11 @@
+ # pylint: disable=wildcard-import,relative-beyond-top-level,g-import-not-at-top
+ from ._stablehlo_ops_gen import *
+ from .._mlir_libs._stablehlo import *
++
++from . import _stablehlo_ops_gen
++
++class CompositeOp(_stablehlo_ops_gen.CompositeOp):
++  def __init__(self, *args, **kwargs):
++    if "num_composite_regions" not in kwargs:
++      kwargs["num_composite_regions"] = 0
++    super().__init__(*args, **kwargs)
 diff --ruN a/stablehlo/stablehlo/testdata/convert_element_type_int8_100_100.mlir b/stablehlo/stablehlo/testdata/convert_element_type_int8_100_100.mlir
 --- stablehlo/stablehlo/testdata/convert_element_type_int8_100_100.mlir
 +++ stablehlo/stablehlo/testdata/convert_element_type_int8_100_100.mlir
@@ -1179,6 +1336,38 @@ diff --ruN a/stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo.1_13_0.ml
  }
  
  // ============ DEFAULTS ============
+diff --ruN a/stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo.1_14_0.mlir b/stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo.1_14_0.mlir
+--- stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo.1_14_0.mlir
++++ stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo.1_14_0.mlir
+@@ -0,0 +1,28 @@
++// RUN: stablehlo-opt --stablehlo-legalize-to-vhlo --vhlo-to-version='target=1.14.0' %s | FileCheck %s
++
++// CHECK-LABEL: vhlo.func_v1 @composite_op
++// CHECK-NEXT: "vhlo.composite_v2"(%arg0) <{
++// CHECK-SAME: composite_attributes = #vhlo.dict_v1<{}>
++// CHECK-SAME: decomposition = #vhlo.string_v1<"decomposition">
++// CHECK-SAME: name = #vhlo.string_v1<"test.composite">
++// CHECK-SAME: version = #vhlo.integer_v1<1 : i32>
++// CHECK-SAME: }> ({
++// CHECK-NEXT: ^bb0(%arg1: !vhlo.tensor_v1<!vhlo.f32_v1>):
++// CHECK-NEXT:   "vhlo.return_v1"(%arg1) : (!vhlo.tensor_v1<!vhlo.f32_v1>) -> ()
++// CHECK-NEXT: }) : (!vhlo.tensor_v1<!vhlo.f32_v1>) -> !vhlo.tensor_v1<!vhlo.f32_v1>
++func.func @composite_op(%arg0: tensor<f32>) -> tensor<f32> {
++  %0 = "stablehlo.composite"(%arg0) ({
++    ^bb0(%arg1: tensor<f32>):
++      "stablehlo.return"(%arg1) : (tensor<f32>) -> ()
++  }) {
++    name = "test.composite",
++    composite_attributes = {},
++    decomposition = @decomposition,
++    version = 1 : i32
++  } : (tensor<f32>) -> tensor<f32>
++  func.return %0 : tensor<f32>
++}
++
++func.func @decomposition(%arg0: tensor<f32>) -> tensor<f32> {
++  func.return %arg0 : tensor<f32>
++}
 diff --ruN a/stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo.mlir b/stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo.mlir
 --- stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo.mlir
 +++ stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo.mlir
@@ -1206,6 +1395,124 @@ diff --ruN a/stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo.mlir b/st
  }
  
  // ============ DEFAULTS ============
+@@ -553,7 +570,7 @@
+ // CHECK-LABEL: "default_composite"
+ // CHECK-NEXT: (%[[ARG0:.*]]: {{.*}})
+ func.func @default_composite(%arg0: tensor<f32>) -> tensor<f32> {
+-  //               CHECK: "vhlo.composite_v1"(%[[ARG0]]) <{
++  //               CHECK: "vhlo.composite_v2"(%[[ARG0]]) <{
+   //          CHECK-SAME:   composite_attributes = #vhlo.dict_v1<{}>
+   //          CHECK-SAME:   decomposition = #vhlo.string_v1<"composite_target">
+   //          CHECK-SAME:   name = #vhlo.string_v1<"stablehlo.composite_target">
+@@ -1271,7 +1288,7 @@
+ // CHECK-LABEL: "op_composite"
+ // CHECK-NEXT: (%[[ARG0:.*]]: {{.*}})
+ func.func @op_composite(%arg0: tensor<f32>) -> tensor<f32> {
+-  //               CHECK: "vhlo.composite_v1"(%[[ARG0]]) <{
++  //               CHECK: "vhlo.composite_v2"(%[[ARG0]]) <{
+   //          CHECK-SAME:   composite_attributes = #vhlo.dict_v1<{#vhlo.string_v1<"my_int"> = #vhlo.integer_v1<1 : i64>, #vhlo.string_v1<"my_string"> = #vhlo.string_v1<"foo">}>
+   //          CHECK-SAME:   decomposition = #vhlo.string_v1<"composite_target">
+   //          CHECK-SAME:   name = #vhlo.string_v1<"stablehlo.composite_target">
+@@ -1282,9 +1299,32 @@
+     decomposition = @composite_target,
+     version = 1 : i32,
+     composite_attributes = {
+-      my_string = "foo",
+-      my_int = 1 : i64
++      my_int = 1 : i64,
++      my_string = "foo"
+     }
++  } : (tensor<f32>) -> tensor<f32>
++  func.return %0 : tensor<f32>
++}
++
++// CHECK-LABEL: "composite_regions"
++// CHECK-NEXT: (%[[ARG0:.*]]: {{.*}})
++func.func @composite_regions(%arg0: tensor<f32>) -> tensor<f32> {
++  //               CHECK: "vhlo.composite_v2"(%[[ARG0]]) <{
++  //          CHECK-SAME:   composite_attributes = #vhlo.dict_v1<{}>
++  //          CHECK-SAME:   decomposition = #vhlo.string_v1<"composite_target">
++  //          CHECK-SAME:   name = #vhlo.string_v1<"stablehlo.composite_target">
++  //          CHECK-SAME:   version = #vhlo.integer_v1<1 : i32>
++  //          CHECK-SAME: }> ({
++  //          CHECK-NEXT: ^bb0(%[[ARG1:.*]]: !vhlo.tensor_v1<!vhlo.f32_v1>):
++  //          CHECK-NEXT:   "vhlo.return_v1"(%[[ARG1]]) : (!vhlo.tensor_v1<!vhlo.f32_v1>) -> ()
++  //          CHECK-NEXT: }) : (!vhlo.tensor_v1<!vhlo.f32_v1>) -> !vhlo.tensor_v1<!vhlo.f32_v1>
++  %0 = "stablehlo.composite"(%arg0) ({
++    ^bb0(%arg1: tensor<f32>):
++      "stablehlo.return"(%arg1) : (tensor<f32>) -> ()
++  }) {
++    name = "stablehlo.composite_target",
++    decomposition = @composite_target,
++    version = 1 : i32
+   } : (tensor<f32>) -> tensor<f32>
+   func.return %0 : tensor<f32>
+ }
+diff --ruN a/stablehlo/stablehlo/tests/vhlo/vhlo_to_version_downgrade.1_13_0.mlir b/stablehlo/stablehlo/tests/vhlo/vhlo_to_version_downgrade.1_13_0.mlir
+--- stablehlo/stablehlo/tests/vhlo/vhlo_to_version_downgrade.1_13_0.mlir
++++ stablehlo/stablehlo/tests/vhlo/vhlo_to_version_downgrade.1_13_0.mlir
+@@ -0,0 +1,22 @@
++// RUN: stablehlo-opt --stablehlo-legalize-to-vhlo --vhlo-to-version='target=1.13.0' %s | FileCheck %s
++
++// CompositeOp was changed in v1.14.0 to have regions.
++// Ensure that serializing for 1.13.0 uses composite_v1 (no regions).
++
++// CHECK-LABEL: vhlo.func_v1 @composite_op
++// CHECK-NEXT: "vhlo.composite_v1"(%arg0) <{
++// CHECK-NOT: regions
++// CHECK-SAME: }> : (!vhlo.tensor_v1<!vhlo.f32_v1>) -> !vhlo.tensor_v1<!vhlo.f32_v1>
++func.func @composite_op(%arg0: tensor<f32>) -> tensor<f32> {
++  %0 = "stablehlo.composite"(%arg0) {
++    name = "test.composite",
++    composite_attributes = {},
++    decomposition = @decomposition,
++    version = 1 : i32
++  } : (tensor<f32>) -> tensor<f32>
++  func.return %0 : tensor<f32>
++}
++
++func.func @decomposition(%arg0: tensor<f32>) -> tensor<f32> {
++  func.return %arg0 : tensor<f32>
++}
+diff --ruN a/stablehlo/stablehlo/tests/vhlo/vhlo_to_version_downgrade_invalid.0_18_0.mlir b/stablehlo/stablehlo/tests/vhlo/vhlo_to_version_downgrade_invalid.0_18_0.mlir
+--- stablehlo/stablehlo/tests/vhlo/vhlo_to_version_downgrade_invalid.0_18_0.mlir
++++ stablehlo/stablehlo/tests/vhlo/vhlo_to_version_downgrade_invalid.0_18_0.mlir
+@@ -2,7 +2,7 @@
+ 
+ // expected-error @-3 {{failed to convert VHLO to v0.18.0}}
+ func.func @composite(%arg0: tensor<f32>) -> tensor<f32> {
+-  // expected-error @+1 {{failed to legalize operation 'vhlo.composite_v1' that was explicitly marked illegal}}
++  // expected-error @+1 {{failed to legalize operation 'vhlo.composite_v2' that was explicitly marked illegal}}
+   %0 = "stablehlo.composite"(%arg0) {
+     name = "stablehlo.composite_target",
+     decomposition = @composite_target
+diff --ruN a/stablehlo/stablehlo/tests/vhlo/vhlo_to_version_downgrade_invalid.1_13_0.mlir b/stablehlo/stablehlo/tests/vhlo/vhlo_to_version_downgrade_invalid.1_13_0.mlir
+--- stablehlo/stablehlo/tests/vhlo/vhlo_to_version_downgrade_invalid.1_13_0.mlir
++++ stablehlo/stablehlo/tests/vhlo/vhlo_to_version_downgrade_invalid.1_13_0.mlir
+@@ -0,0 +1,23 @@
++// RUN: not stablehlo-opt --stablehlo-legalize-to-vhlo --vhlo-to-version='target=1.13.0' %s 2>&1 | FileCheck %s
++
++// CompositeOp with regions cannot be downgraded to v1.13.0 (v1).
++
++module {
++  func.func @composite_with_regions(%arg0: tensor<f32>) -> tensor<f32> {
++    // CHECK: failed to legalize operation 'vhlo.composite_v2'
++    %0 = "stablehlo.composite"(%arg0) ({
++      ^bb0(%arg1: tensor<f32>):
++        "stablehlo.return"(%arg1) : (tensor<f32>) -> ()
++    }) {
++      name = "test.composite",
++      composite_attributes = {},
++      decomposition = @decomposition,
++      version = 1 : i32
++    } : (tensor<f32>) -> tensor<f32>
++    func.return %0 : tensor<f32>
++  }
++
++  func.func @decomposition(%arg0: tensor<f32>) -> tensor<f32> {
++    func.return %arg0 : tensor<f32>
++  }
++}
 diff --ruN a/stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp b/stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp
 --- stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp
 +++ stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp
@@ -1366,7 +1673,7 @@ diff --ruN a/stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp b/stable
  ArrayAttr convertPrecisionConfig(mlir::ArrayAttr precisionConfig,
                                   ConversionPatternRewriter& rewriter) {
    std::vector<Attribute> precisions;
-@@ -2123,131 +2273,156 @@
+@@ -2123,131 +2273,159 @@
    }
    RankedTensorType lhsTy = cast<RankedTensorType>(lhs.getType());
    RankedTensorType rhsTy = cast<RankedTensorType>(rhs.getType());
@@ -1598,29 +1905,39 @@ diff --ruN a/stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp b/stable
 +    // without shape inference. But dot_general shape inference handles it.
 +    // However, if we accumulate, `out` needs to be initialized.
 +    // We peel the first iteration to initialize `out`.
++    SmallVector<NamedAttribute, 2> attributes;
++    attributes.push_back(rewriter.getNamedAttr(
++        "dot_dimension_numbers",
++        rewriter.getAttr<mlir::stablehlo::DotDimensionNumbersAttr>(
++            lhsBatchingDimensions, rhsBatchingDims, lhsContractingDimensions,
++            rhsContractingDims)));
++    if (precisionConfig.has_value()) {
++      attributes.push_back(
++          rewriter.getNamedAttr("precision_config", precisionConfig.value()));
++    }
      Value dotGeneral = mlir::stablehlo::DotGeneralOp::create(
 -        rewriter, op.getLoc(), TypeRange{out.getType()},
 -        ValueRange{lhs, rhsReshapedSlice},
-+        rewriter, op.getLoc(), resultType, ValueRange{lhsMasked, rhsReshaped},
-         ArrayRef<mlir::NamedAttribute>{
-             rewriter.getNamedAttr(
-                 "dot_dimension_numbers",
-                 rewriter.getAttr<mlir::stablehlo::DotDimensionNumbersAttr>(
+-        ArrayRef<mlir::NamedAttribute>{
+-            rewriter.getNamedAttr(
+-                "dot_dimension_numbers",
+-                rewriter.getAttr<mlir::stablehlo::DotDimensionNumbersAttr>(
 -                    /*lhs_batching_dimensions=*/lhsBatchingDimensions,
 -                    /*rhs_batching_dimensions=*/rhsBatchingDims,
 -                    /*lhs_contracting_dimensions=*/lhsContractingDimensions,
 -                    /*rhs_contracting_dimensions=*/rhsContractingDims)),
-+                    lhsBatchingDimensions, rhsBatchingDims,
-+                    lhsContractingDimensions, rhsContractingDims)),
-             rewriter.getNamedAttr("precision_config",
-                                   precisionConfig.value())});
- 
+-            rewriter.getNamedAttr("precision_config",
+-                                  precisionConfig.value())});
+-
 -    // Place the i'th dot_general to the corresponding position in the result.
 -    Value select = mlir::stablehlo::SelectOp::create(
 -        rewriter, op.getLoc(), logicalAndBroadcasted, dotGeneral, outZeros);
 -    out = mlir::stablehlo::AddOp::create(rewriter, op.getLoc(), out, select);
 -    start =
 -        mlir::stablehlo::AddOp::create(rewriter, op.getLoc(), start, groupSize);
++        rewriter, op.getLoc(), resultType, ValueRange{lhsMasked, rhsReshaped},
++        attributes);
++
 +    if (i == 0) {
 +      out = dotGeneral;
 +    } else {
@@ -1631,7 +1948,7 @@ diff --ruN a/stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp b/stable
    }
    rewriter.replaceOp(op, {out});
    return success();
-@@ -2260,7 +2435,156 @@
+@@ -2260,7 +2438,158 @@
  //   result : [g, b, m, n]
  LogicalResult handleRaggedDotMode2(mlir::chlo::RaggedDotOp op,
                                     ConversionPatternRewriter& rewriter) {
@@ -1754,18 +2071,20 @@ diff --ruN a/stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp b/stable
 +
 +    // Dot general.
 +    auto resultShape = op.getResult().getType().getShape().drop_front();
++    SmallVector<NamedAttribute, 2> attributes;
++    attributes.push_back(rewriter.getNamedAttr(
++        "dot_dimension_numbers",
++        rewriter.getAttr<mlir::stablehlo::DotDimensionNumbersAttr>(
++            lhsBatchingDimensions,
++            raggedDotDimensionNumbers.getRhsBatchingDimensions(),
++            lhsContractingDimensions, rhsContractingDimensions)));
++    if (precisionConfig.has_value()) {
++      attributes.push_back(
++          rewriter.getNamedAttr("precision_config", precisionConfig.value()));
++    }
 +    Value dotGeneral = mlir::stablehlo::DotGeneralOp::create(
 +        rewriter, op.getLoc(), RankedTensorType::get(resultShape, outDType),
-+        {lhsMasked, rhs},
-+        ArrayRef<NamedAttribute>{
-+            rewriter.getNamedAttr(
-+                "dot_dimension_numbers",
-+                rewriter.getAttr<mlir::stablehlo::DotDimensionNumbersAttr>(
-+                    lhsBatchingDimensions,
-+                    raggedDotDimensionNumbers.getRhsBatchingDimensions(),
-+                    lhsContractingDimensions, rhsContractingDimensions)),
-+            rewriter.getNamedAttr("precision_config",
-+                                  precisionConfig.value())});
++        {lhsMasked, rhs}, attributes);
 +
 +    results.push_back(dotGeneral);
 +    start = limit;
@@ -1789,7 +2108,7 @@ diff --ruN a/stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp b/stable
  }
  
  // Mode 3, where the ragged dimension is an lhs/rhs batch dim (b).
-@@ -2270,7 +2594,27 @@
+@@ -2270,7 +2599,31 @@
  //   result : [b, m, n]
  LogicalResult handleRaggedDotMode3(mlir::chlo::RaggedDotOp op,
                                     ConversionPatternRewriter& rewriter) {
@@ -1803,22 +2122,26 @@ diff --ruN a/stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp b/stable
 +  }
 +
 +  auto raggedDotDimensionNumbers = op.getRaggedDotDimensionNumbers();
++  SmallVector<NamedAttribute, 2> attributes;
++  attributes.push_back(rewriter.getNamedAttr(
++      "dot_dimension_numbers",
++      rewriter.getAttr<mlir::stablehlo::DotDimensionNumbersAttr>(
++          raggedDotDimensionNumbers.getLhsBatchingDimensions(),
++          raggedDotDimensionNumbers.getRhsBatchingDimensions(),
++          raggedDotDimensionNumbers.getLhsContractingDimensions(),
++          raggedDotDimensionNumbers.getRhsContractingDimensions())));
++  if (precisionConfig.has_value()) {
++    attributes.push_back(
++        rewriter.getNamedAttr("precision_config", precisionConfig.value()));
++  }
 +  rewriter.replaceOpWithNewOp<mlir::stablehlo::DotGeneralOp>(
 +      op, op.getResult().getType(), ValueRange{op.getLhs(), op.getRhs()},
-+      ArrayRef<NamedAttribute>{
-+          rewriter.getNamedAttr(
-+              "dot_dimension_numbers",
-+              rewriter.getAttr<mlir::stablehlo::DotDimensionNumbersAttr>(
-+                  raggedDotDimensionNumbers.getLhsBatchingDimensions(),
-+                  raggedDotDimensionNumbers.getRhsBatchingDimensions(),
-+                  raggedDotDimensionNumbers.getLhsContractingDimensions(),
-+                  raggedDotDimensionNumbers.getRhsContractingDimensions())),
-+          rewriter.getNamedAttr("precision_config", precisionConfig.value())});
++      attributes);
 +  return success();
  }
  
  }  // namespace
-@@ -2291,6 +2635,333 @@
+@@ -2291,6 +2644,333 @@
      } else {
        return handleRaggedDotMode3(op, rewriter);
      }
@@ -2152,7 +2475,7 @@ diff --ruN a/stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp b/stable
    }
  };
  
-@@ -2361,29 +3032,41 @@
+@@ -2361,29 +3041,41 @@
              : std::min(static_cast<int64_t>(op.getK()), lastDimSize);
      int64_t isDynamic = !operandType.hasStaticShape();
      auto i32Type = rewriter.getIntegerType(32);
@@ -2210,7 +2533,7 @@ diff --ruN a/stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp b/stable
            /*dimension=*/0);
      }
  
-@@ -2426,18 +3109,12 @@
+@@ -2426,18 +3118,12 @@
        Value startIndices = mlir::stablehlo::ConstantOp::create(
            rewriter, op.getLoc(),
            DenseIntElementsAttr::get(indicesTy, beginIndices));
@@ -2232,7 +2555,7 @@ diff --ruN a/stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp b/stable
  
        values = mlir::stablehlo::RealDynamicSliceOp::create(
            rewriter, op.getLoc(), resultType, tupleFirstElement, startIndices,
-@@ -2531,12 +3208,11 @@
+@@ -2531,12 +3217,11 @@
  static void populateChloDecompositionPatterns(MLIRContext* context,
                                                RewritePatternSet* patterns) {
    populateWithGenerated(*patterns);
@@ -2250,4 +2573,159 @@ diff --ruN a/stablehlo/stablehlo/transforms/ChloLegalizeToStablehlo.cpp b/stable
  }
  }  // namespace
  
+diff --ruN a/stablehlo/stablehlo/transforms/MapStablehloToVhlo.h b/stablehlo/stablehlo/transforms/MapStablehloToVhlo.h
+--- stablehlo/stablehlo/transforms/MapStablehloToVhlo.h
++++ stablehlo/stablehlo/transforms/MapStablehloToVhlo.h
+@@ -72,7 +72,7 @@
+ MAP_STABLEHLO_TO_VHLO(CollectivePermuteOp, V1)
+ MAP_STABLEHLO_TO_VHLO(CompareOp, V1)
+ MAP_STABLEHLO_TO_VHLO(ComplexOp, V1)
+-MAP_STABLEHLO_TO_VHLO(CompositeOp, V1)
++MAP_STABLEHLO_TO_VHLO(CompositeOp, V2)
+ MAP_STABLEHLO_TO_VHLO(ConcatenateOp, V1)
+ MAP_STABLEHLO_TO_VHLO(ConstantOp, V1)
+ MAP_STABLEHLO_TO_VHLO(ConvertOp, V1)
+diff --ruN a/stablehlo/stablehlo/transforms/StablehloLegalizeToVhlo.cpp b/stablehlo/stablehlo/transforms/StablehloLegalizeToVhlo.cpp
+--- stablehlo/stablehlo/transforms/StablehloLegalizeToVhlo.cpp
++++ stablehlo/stablehlo/transforms/StablehloLegalizeToVhlo.cpp
+@@ -28,6 +28,7 @@
+ #include "mlir/IR/BuiltinDialect.h"
+ #include "mlir/IR/BuiltinOps.h"
+ #include "mlir/IR/BuiltinTypes.h"
++#include "mlir/IR/OpDefinition.h"
+ #include "mlir/IR/PatternMatch.h"
+ #include "mlir/IR/ValueRange.h"
+ #include "mlir/Rewrite/FrozenRewritePatternSet.h"
+@@ -1024,17 +1025,18 @@
+     // stablehlo.case that uses a variadic number of regions which means an
+     // additional argument for the generic builder.
+     StablehloToVhloOp<StablehloOpTy> vhloOp;
+-    if constexpr (std::is_same<StablehloOpTy, stablehlo::CaseOp>::value) {
+-      vhloOp = vhlo::CaseOpV1::create(rewriter, stablehloOp.getLoc(), vhloTypes,
+-                                      vhloOperands, vhloAttrs,
+-                                      stablehloOp.getBranches().size());
++    if constexpr (StablehloOpTy::template hasTrait<
++                      OpTrait::VariadicRegions>()) {
++      vhloOp = StablehloToVhloOp<StablehloOpTy>::create(
++          rewriter, stablehloOp.getLoc(), vhloTypes, vhloOperands, vhloAttrs,
++          stablehloOp.getNumRegions());
+     } else {
+       vhloOp = StablehloToVhloOp<StablehloOpTy>::create(
+           rewriter, stablehloOp.getLoc(), vhloTypes, vhloOperands, vhloAttrs);
+     }
+ 
+     for (auto [stablehloRegion, vhloRegion] :
+-         llvm::zip(stablehloOp->getRegions(), vhloOp->getRegions())) {
++         llvm::zip_equal(stablehloOp->getRegions(), vhloOp->getRegions())) {
+       rewriter.inlineRegionBefore(stablehloRegion, vhloRegion,
+                                   vhloRegion.end());
+       if (failed(rewriter.convertRegionTypes(&vhloRegion,
+diff --ruN a/stablehlo/stablehlo/transforms/VhloLegalizeToStablehlo.cpp b/stablehlo/stablehlo/transforms/VhloLegalizeToStablehlo.cpp
+--- stablehlo/stablehlo/transforms/VhloLegalizeToStablehlo.cpp
++++ stablehlo/stablehlo/transforms/VhloLegalizeToStablehlo.cpp
+@@ -29,6 +29,7 @@
+ #include "mlir/IR/BuiltinAttributes.h"
+ #include "mlir/IR/BuiltinOps.h"
+ #include "mlir/IR/BuiltinTypeInterfaces.h"
++#include "mlir/IR/OpDefinition.h"
+ #include "mlir/IR/PatternMatch.h"
+ #include "mlir/IR/ValueRange.h"
+ #include "mlir/Rewrite/FrozenRewritePatternSet.h"
+@@ -607,7 +608,7 @@
+       if (!stablehloAttr) return specialFailure();
+     }
+   }
+-  if constexpr (std::is_same<VhloOpTy, vhlo::CompositeOpV1>::value) {
++  if constexpr (std::is_same<VhloOpTy, vhlo::CompositeOpV2>::value) {
+     if (vhloName == "decomposition") {
+       stablehloAttr = convertSymbol(vhloAttr, typeConverter);
+       if (!stablehloAttr) return specialFailure();
+@@ -814,7 +815,7 @@
+                                                vhlo::ComparisonTypeV1::NOTYPE)))
+       eraseAttrs(vhloAttrs, "compare_type");
+   }
+-  if constexpr (std::is_same<VhloOpTy, vhlo::CompositeOpV1>::value) {
++  if constexpr (std::is_same<VhloOpTy, vhlo::CompositeOpV2>::value) {
+     if (isInteger(vhloOp.getVersionAttr(), 0)) {
+       eraseAttrs(vhloAttrs, "version");
+     }
+@@ -1002,15 +1003,14 @@
+       }
+     }
+ 
+-    // Convert the VHLO operation to a StableHLO equivalent.
+-    // This can almost be done in a generic fashion, except for
+-    // vhlo.case that uses a variadic number of regions which means an
+-    // additional argument for the generic builder.
++    // Convert the VHLO operation to a StableHLO equivalent. This can almost be
++    // done in a generic fashion, except for ops with a variadic number of
++    // regions which means an additional argument for the generic builder.
+     VhloToStablehloOp<VhloOpTy> stablehloOp;
+-    if constexpr (std::is_same<VhloOpTy, vhlo::CaseOpV1>::value) {
+-      stablehloOp = stablehlo::CaseOp::create(
++    if constexpr (VhloOpTy::template hasTrait<OpTrait::VariadicRegions>()) {
++      stablehloOp = VhloToStablehloOp<VhloOpTy>::create(
+           rewriter, vhloOp.getLoc(), stablehloTypes, stablehloOperands,
+-          stablehloAttrs, vhloOp.getBranches().size());
++          stablehloAttrs, vhloOp.getNumRegions());
+     } else {
+       stablehloOp = VhloToStablehloOp<VhloOpTy>::create(
+           rewriter, vhloOp.getLoc(), stablehloTypes, stablehloOperands,
+@@ -1018,7 +1018,7 @@
+     }
+ 
+     for (auto [vhloRegion, stablehloRegion] :
+-         llvm::zip(vhloOp->getRegions(), stablehloOp->getRegions())) {
++         llvm::zip_equal(vhloOp->getRegions(), stablehloOp->getRegions())) {
+       rewriter.inlineRegionBefore(vhloRegion, stablehloRegion,
+                                   stablehloRegion.end());
+       if (failed(rewriter.convertRegionTypes(&stablehloRegion,
+diff --ruN a/stablehlo/stablehlo/transforms/VhloToVersion.cpp b/stablehlo/stablehlo/transforms/VhloToVersion.cpp
+--- stablehlo/stablehlo/transforms/VhloToVersion.cpp
++++ stablehlo/stablehlo/transforms/VhloToVersion.cpp
+@@ -480,6 +480,36 @@
+   }
+ };
+ 
++struct CompositeOpV1ToV2 : public OpRewritePattern<CompositeOpV1> {
++  using OpRewritePattern<CompositeOpV1>::OpRewritePattern;
++
++  LogicalResult matchAndRewrite(CompositeOpV1 op,
++                                PatternRewriter& rewriter) const override {
++    auto newOp = rewriter.replaceOpWithNewOp<CompositeOpV2>(
++        op, op->getResultTypes(), op.getInputs(), op.getName(),
++        op.getCompositeAttributes(), op.getDecomposition(), op.getVersion(),
++        /*composite_regionsCount=*/0);
++    copyDiscardableAttrs(op, newOp);
++    return success();
++  }
++};
++
++struct CompositeOpV2ToV1 : public OpRewritePattern<CompositeOpV2> {
++  using OpRewritePattern<CompositeOpV2>::OpRewritePattern;
++
++  LogicalResult matchAndRewrite(CompositeOpV2 op,
++                                PatternRewriter& rewriter) const override {
++    if (!op.getCompositeRegions().empty()) {
++      return rewriter.notifyMatchFailure(op, "non-empty regions");
++    }
++    auto newOp = rewriter.replaceOpWithNewOp<CompositeOpV1>(
++        op, op->getResultTypes(), op.getInputs(), op.getName(),
++        op.getCompositeAttributes(), op.getDecomposition(), op.getVersion());
++    copyDiscardableAttrs(op, newOp);
++    return success();
++  }
++};
++
+ #include "stablehlo/transforms/VhloToVersionPatterns.h.inc"
+ 
+ }  // namespace
+@@ -492,6 +522,7 @@
+   vhlo::populateWithGenerated(*patterns);
+   patterns->add<vhlo::ScatterOpV1ToV2, vhlo::ScatterOpV2ToV1>(context);
+   patterns->add<vhlo::AllReduceOpV1ToV2, vhlo::AllReduceOpV2ToV1>(context);
++  patterns->add<vhlo::CompositeOpV1ToV2, vhlo::CompositeOpV2ToV1>(context);
+ }
+ 
+ }  // namespace stablehlo
 
